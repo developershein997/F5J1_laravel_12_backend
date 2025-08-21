@@ -40,11 +40,20 @@ class LaunchGameController extends Controller
      */
     public function launchGame(Request $request)
     {
-        Log::info('Launch Game API Request', ['request' => $request->all()]);
+        Log::info('Launch Game API Request Started', [
+            'request' => $request->all(),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'timestamp' => now()->toISOString()
+        ]);
 
         $user = Auth::user();
         if (! $user) {
-            Log::warning('Unauthenticated user attempting game launch.');
+            Log::warning('Unauthenticated user attempting game launch.', [
+                'ip' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'timestamp' => now()->toISOString()
+            ]);
 
             return ApiResponseService::error(
                 SeamlessWalletCode::MemberNotExist,
@@ -52,11 +61,30 @@ class LaunchGameController extends Controller
             );
         }
 
+        Log::info('User authenticated for game launch', [
+            'user_id' => $user->id,
+            'user_name' => $user->user_name,
+            'user_email' => $user->email,
+            'timestamp' => now()->toISOString()
+        ]);
+
         try {
+            Log::info('Starting request validation', [
+                'game_code' => $request->input('game_code'),
+                'product_code' => $request->input('product_code'),
+                'game_type' => $request->input('game_type'),
+                'timestamp' => now()->toISOString()
+            ]);
+
             $validatedData = $request->validate([
                 'game_code' => 'required|string',
                 'product_code' => 'required|integer',
                 'game_type' => 'required|string',
+            ]);
+
+            Log::info('Request validation successful', [
+                'validated_data' => $validatedData,
+                'timestamp' => now()->toISOString()
             ]);
 
             $currencyMap = [
@@ -68,8 +96,22 @@ class LaunchGameController extends Controller
             $configCurrency = config('seamless_key.api_currency');
             $apiCurrency = $currencyMap[$validatedData['product_code']] ?? 
                           (in_array($configCurrency, ['IDR', 'MMK2', 'MMK3']) ? $configCurrency : 'MMK');
+
+            Log::info('Currency mapping determined', [
+                'product_code' => $validatedData['product_code'],
+                'config_currency' => $configCurrency,
+                'mapped_currency' => $currencyMap[$validatedData['product_code']] ?? 'not_found',
+                'final_currency' => $apiCurrency,
+                'timestamp' => now()->toISOString()
+            ]);
+
         } catch (\Illuminate\Validation\ValidationException $e) {
-            Log::warning('Launch Game API Validation Failed', ['errors' => $e->errors()]);
+            Log::warning('Launch Game API Validation Failed', [
+                'errors' => $e->errors(),
+                'request_data' => $request->all(),
+                'user_id' => $user->id,
+                'timestamp' => now()->toISOString()
+            ]);
 
             return ApiResponseService::error(
                 SeamlessWalletCode::InternalServerError,
@@ -79,12 +121,37 @@ class LaunchGameController extends Controller
         }
 
         // Get or generate password
+        Log::info('Checking game provider password for user', [
+            'user_id' => $user->id,
+            'timestamp' => now()->toISOString()
+        ]);
+
         $gameProviderPassword = $user->getGameProviderPassword();
         if (! $gameProviderPassword) {
+            Log::info('No existing game provider password found, generating new one', [
+                'user_id' => $user->id,
+                'timestamp' => now()->toISOString()
+            ]);
+
             $gameProviderPassword = Str::random(50);
             $user->setGameProviderPassword($gameProviderPassword);
-            Log::info('Generated and stored new game provider password for user', ['user_id' => $user->id]);
+            
+            Log::info('Generated and stored new game provider password for user', [
+                'user_id' => $user->id,
+                'password_length' => strlen($gameProviderPassword),
+                'timestamp' => now()->toISOString()
+            ]);
+        } else {
+            Log::info('Using existing game provider password for user', [
+                'user_id' => $user->id,
+                'password_length' => strlen($gameProviderPassword),
+                'timestamp' => now()->toISOString()
+            ]);
         }
+
+        Log::info('Loading configuration values', [
+            'timestamp' => now()->toISOString()
+        ]);
 
         $agentCode = config('seamless_key.agent_code');
         $secretKey = config('seamless_key.secret_key');
@@ -92,7 +159,23 @@ class LaunchGameController extends Controller
         $operatorLobbyUrl = 'https://pp29.site';
         $requestTime = now('Asia/Shanghai')->timestamp;
 
+        Log::info('Configuration loaded', [
+            'agent_code' => $agentCode,
+            'api_url' => $apiUrl,
+            'operator_lobby_url' => $operatorLobbyUrl,
+            'request_time' => $requestTime,
+            'timezone' => 'Asia/Shanghai',
+            'timestamp' => now()->toISOString()
+        ]);
+
         $generatedSignature = md5($requestTime.$secretKey.'launchgame'.$agentCode);
+        
+        Log::info('Signature generated', [
+            'request_time' => $requestTime,
+            'signature' => $generatedSignature,
+            'signature_length' => strlen($generatedSignature),
+            'timestamp' => now()->toISOString()
+        ]);
 
         $payload = [
             'operator_code' => $agentCode,
@@ -111,22 +194,61 @@ class LaunchGameController extends Controller
             'operator_lobby_url' => $operatorLobbyUrl,
         ];
 
-        Log::info('Sending Launch Game Request to Provider', ['url' => $apiUrl, 'payload' => $payload]);
+        Log::info('Payload constructed successfully', [
+            'payload_keys' => array_keys($payload),
+            'payload_size' => strlen(json_encode($payload)),
+            'timestamp' => now()->toISOString()
+        ]);
+
+        Log::info('Sending Launch Game Request to Provider', [
+            'url' => $apiUrl,
+            'payload' => $payload,
+            'user_id' => $user->id,
+            'timestamp' => now()->toISOString()
+        ]);
 
         try {
+            Log::info('Making HTTP request to provider API', [
+                'url' => $apiUrl,
+                'method' => 'POST',
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json'
+                ],
+                'timestamp' => now()->toISOString()
+            ]);
+
             $response = Http::withHeaders([
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
             ])->post($apiUrl, $payload);
 
+            Log::info('Provider API response received', [
+                'status_code' => $response->status(),
+                'response_headers' => $response->headers(),
+                'response_size' => strlen($response->body()),
+                'timestamp' => now()->toISOString()
+            ]);
+
             $responseData = $response->json();
+
+            Log::info('Provider API response parsed', [
+                'response_data' => $responseData,
+                'has_url' => !empty($responseData['url']),
+                'has_content' => !empty($responseData['content']),
+                'response_code' => $responseData['code'] ?? 'not_set',
+                'timestamp' => now()->toISOString()
+            ]);
 
             // If response fails or has error code, log and return error
             if (! $response->successful() || empty($responseData['url']) && empty($responseData['content'])) {
                 Log::error('Provider Launch Game Failed', [
                     'status' => $response->status(),
                     'body' => $response->body(),
+                    'response_data' => $responseData,
                     'payload' => $payload,
+                    'user_id' => $user->id,
+                    'timestamp' => now()->toISOString()
                 ]);
 
                 return response()->json([
@@ -137,6 +259,15 @@ class LaunchGameController extends Controller
 
             // If MMK2 provider, return `content` if present (e.g., for PGSoft etc.)
             if ($apiCurrency === 'MMK2') {
+                Log::info('Returning MMK2 provider response', [
+                    'currency' => $apiCurrency,
+                    'response_code' => $responseData['code'] ?? SeamlessWalletCode::Success->value,
+                    'has_url' => !empty($responseData['url']),
+                    'has_content' => !empty($responseData['content']),
+                    'user_id' => $user->id,
+                    'timestamp' => now()->toISOString()
+                ]);
+
                 return response()->json([
                     'code' => $responseData['code'] ?? SeamlessWalletCode::Success->value,
                     'message' => $responseData['message'] ?? 'Game launched successfully',
@@ -146,6 +277,22 @@ class LaunchGameController extends Controller
             }
 
             // Otherwise, return just the URL
+            Log::info('Returning standard provider response', [
+                'currency' => $apiCurrency,
+                'response_code' => 200,
+                'has_url' => !empty($responseData['url']),
+                'user_id' => $user->id,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            Log::info('Game launch completed successfully', [
+                'user_id' => $user->id,
+                'currency' => $apiCurrency,
+                'game_code' => $validatedData['game_code'],
+                'product_code' => $validatedData['product_code'],
+                'timestamp' => now()->toISOString()
+            ]);
+
             return response()->json([
                 'code' => 200,
                 'message' => 'Game launched successfully',
@@ -154,8 +301,14 @@ class LaunchGameController extends Controller
         } catch (\Throwable $e) {
             Log::error('Unexpected error during provider API call', [
                 'exception' => $e->getMessage(),
+                'exception_class' => get_class($e),
+                'exception_code' => $e->getCode(),
+                'exception_file' => $e->getFile(),
+                'exception_line' => $e->getLine(),
                 'trace' => $e->getTraceAsString(),
                 'request_payload' => $payload,
+                'user_id' => $user->id,
+                'timestamp' => now()->toISOString()
             ]);
 
             return response()->json([
