@@ -105,6 +105,42 @@ class LaunchGameController extends Controller
                 'timestamp' => now()->toISOString()
             ]);
 
+            // Validate that the game exists in the provider's system
+            Log::info('Validating game existence with provider', [
+                'game_code' => $validatedData['game_code'],
+                'product_code' => $validatedData['product_code'],
+                'game_type' => $validatedData['game_type'],
+                'timestamp' => now()->toISOString()
+            ]);
+
+            $gameValidationResponse = $this->validateGameWithProvider(
+                $validatedData['game_code'],
+                $validatedData['product_code'],
+                $validatedData['game_type']
+            );
+
+            if (!$gameValidationResponse['valid']) {
+                Log::warning('Game validation failed with provider', [
+                    'game_code' => $validatedData['game_code'],
+                    'product_code' => $validatedData['product_code'],
+                    'game_type' => $validatedData['game_type'],
+                    'provider_response' => $gameValidationResponse,
+                    'timestamp' => now()->toISOString()
+                ]);
+
+                return ApiResponseService::error(
+                    SeamlessWalletCode::InternalServerError,
+                    'Game not found or not available: ' . $gameValidationResponse['message']
+                );
+            }
+
+            Log::info('Game validation successful with provider', [
+                'game_code' => $validatedData['game_code'],
+                'product_code' => $validatedData['product_code'],
+                'game_type' => $validatedData['game_type'],
+                'timestamp' => now()->toISOString()
+            ]);
+
         } catch (\Illuminate\Validation\ValidationException $e) {
             Log::warning('Launch Game API Validation Failed', [
                 'errors' => $e->errors(),
@@ -570,4 +606,131 @@ class LaunchGameController extends Controller
     //         );
     //     }
     // }
+
+    /**
+     * Validates if a game exists with the provider before attempting to launch it.
+     *
+     * @param string $gameCode
+     * @param int $productCode
+     * @param string $gameType
+     * @return array
+     */
+    private function validateGameWithProvider(string $gameCode, int $productCode, string $gameType): array
+    {
+        try {
+            Log::info('Starting game validation with provider', [
+                'game_code' => $gameCode,
+                'product_code' => $productCode,
+                'game_type' => $gameType,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            $agentCode = config('seamless_key.agent_code');
+            $secretKey = config('seamless_key.secret_key');
+            $apiUrl = config('seamless_key.api_url').'/api/operators/provider-games';
+            $requestTime = now('Asia/Shanghai')->timestamp;
+
+            $generatedSignature = md5($requestTime.$secretKey.'gamelist'.$agentCode);
+
+            $params = [
+                'product_code' => $productCode,
+                'operator_code' => $agentCode,
+                'sign' => $generatedSignature,
+                'request_time' => $requestTime,
+                'game_type' => $gameType,
+            ];
+
+            Log::info('Making game validation request to provider', [
+                'url' => $apiUrl,
+                'params' => $params,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            $response = Http::get($apiUrl, $params);
+            $responseData = $response->json();
+
+            Log::info('Game validation response received', [
+                'status_code' => $response->status(),
+                'response_data' => $responseData,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            if (!$response->successful()) {
+                Log::warning('Game validation request failed', [
+                    'status_code' => $response->status(),
+                    'response_body' => $response->body(),
+                    'timestamp' => now()->toISOString()
+                ]);
+
+                return [
+                    'valid' => false,
+                    'message' => 'Provider API request failed: HTTP ' . $response->status()
+                ];
+            }
+
+            // Check if the specific game exists in the response
+            if (isset($responseData['provider_games']) && is_array($responseData['provider_games'])) {
+                foreach ($responseData['provider_games'] as $game) {
+                    if ($game['game_code'] === $gameCode) {
+                        Log::info('Game found in provider response', [
+                            'game_code' => $gameCode,
+                            'game_name' => $game['game_name'] ?? 'Unknown',
+                            'status' => $game['status'] ?? 'Unknown',
+                            'timestamp' => now()->toISOString()
+                        ]);
+
+                        // Check if the game is activated
+                        if (isset($game['status']) && $game['status'] === 'ACTIVATED') {
+                            return [
+                                'valid' => true,
+                                'message' => 'Game found and activated',
+                                'game_data' => $game
+                            ];
+                        } else {
+                            return [
+                                'valid' => false,
+                                'message' => 'Game found but not activated (Status: ' . ($game['status'] ?? 'Unknown') . ')'
+                            ];
+                        }
+                    }
+                }
+
+                Log::warning('Game not found in provider response', [
+                    'game_code' => $gameCode,
+                    'available_games' => count($responseData['provider_games']),
+                    'timestamp' => now()->toISOString()
+                ]);
+
+                return [
+                    'valid' => false,
+                    'message' => 'Game not found in provider\'s game list'
+                ];
+            }
+
+            Log::warning('Invalid provider response format', [
+                'response_data' => $responseData,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            return [
+                'valid' => false,
+                'message' => 'Invalid provider response format'
+            ];
+
+        } catch (\Throwable $e) {
+            Log::error('Exception during game validation', [
+                'exception' => $e->getMessage(),
+                'exception_class' => get_class($e),
+                'game_code' => $gameCode,
+                'product_code' => $productCode,
+                'game_type' => $gameType,
+                'timestamp' => now()->toISOString()
+            ]);
+
+            return [
+                'valid' => false,
+                'message' => 'Game validation error: ' . $e->getMessage()
+            ];
+        }
+    }
 }
