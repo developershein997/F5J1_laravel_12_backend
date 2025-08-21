@@ -64,7 +64,10 @@ class LaunchGameController extends Controller
                 1046 => 'MMK2', 1004 => 'MMK2',
             ];
 
-            $apiCurrency = $currencyMap[$validatedData['product_code']] ?? config('seamless_key.api_currency');
+            // Use mapped currency or fall back to MMK if config currency is invalid
+            $configCurrency = config('seamless_key.api_currency');
+            $apiCurrency = $currencyMap[$validatedData['product_code']] ?? 
+                          (in_array($configCurrency, ['MMK', 'MMK2', 'MMK3']) ? $configCurrency : 'MMK');
         } catch (\Illuminate\Validation\ValidationException $e) {
             Log::warning('Launch Game API Validation Failed', ['errors' => $e->errors()]);
 
